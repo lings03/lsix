@@ -1,0 +1,174 @@
+name: Cross-platform Build & Package
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [darwin, windows, linux]
+        arch: [amd64]
+    name: Build for ${{ matrix.os }}/${{ matrix.arch }}
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v3
+      
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.22'
+      
+      - name: Install go-bindata
+        run: |
+          go install github.com/go-bindata/go-bindata/v3/go-bindata@latest
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+      
+      - name: Generate bindata files
+        run: |
+          go-bindata -o internal/util/access.go -pkg util static/... templates/... cache/...
+      
+      - name: Build binary
+        run: |
+          OUTPUT_NAME=your-app
+          EXT=""
+          if [ "${{ matrix.os }}" = "windows" ]; then EXT=".exe"; fi
+          mkdir -p dist/${{ matrix.os }}-${{ matrix.arch }}
+          GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -o dist/${{ matrix.os }}-${{ matrix.arch }}/$OUTPUT_NAME$EXT cmd/main.go
+      
+      - name: Install packaging tools for Linux (RPM)
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
+      
+      - name: Install packaging tools for macOS (DMG)
+        if: matrix.os == 'darwin'
+        run: |
+          # Install create-dmg tool
+          npm install -g create-dmg || true
+          # Alternative: use genisoimage if create-dmg fails
+          sudo apt-get update
+          sudo apt-get install -y genisoimage
+      
+      - name: Package for Linux (RPM)
+        if: matrix.os == 'linux'
+        run: |
+          APP_NAME=your-app
+          VERSION=1.0.0
+          
+          # Create RPM build structure
+          mkdir -p rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          mkdir -p rpmbuild/SOURCES/$APP_NAME-$VERSION/usr/local/bin
+          
+          # Copy binary
+          cp dist/${{ matrix.os }}-${{ matrix.arch }}/$APP_NAME rpmbuild/SOURCES/$APP_NAME-$VERSION/usr/local/bin/
+          
+          # Create tarball
+          cd rpmbuild/SOURCES
+          tar -czf $APP_NAME-$VERSION.tar.gz $APP_NAME-$VERSION/
+          cd ../..
+          
+          # Create RPM spec file
+          cat > rpmbuild/SPECS/$APP_NAME.spec << EOF
+          Name: $APP_NAME
+          Version: $VERSION
+          Release: 1
+          Summary: Your App Description
+          License: MIT
+          Source0: %{name}-%{version}.tar.gz
+          BuildArch: x86_64
+          
+          %description
+          Your application description
+          
+          %prep
+          %setup -q
+          
+          %install
+          mkdir -p %{buildroot}/usr/local/bin
+          cp usr/local/bin/$APP_NAME %{buildroot}/usr/local/bin/
+          
+          %files
+          /usr/local/bin/$APP_NAME
+          
+          %changelog
+          * $(date +'%a %b %d %Y') Builder <builder@example.com> - $VERSION-1
+          - Initial package
+          EOF
+          
+          # Build RPM
+          rpmbuild --define "_topdir $(pwd)/rpmbuild" -ba rpmbuild/SPECS/$APP_NAME.spec
+          
+          # Copy RPM to dist
+          cp rpmbuild/RPMS/x86_64/$APP_NAME-$VERSION-1.x86_64.rpm dist/${{ matrix.os }}-${{ matrix.arch }}.rpm
+      
+      - name: Package for macOS (DMG)
+        if: matrix.os == 'darwin'
+        run: |
+          APP_NAME=your-app
+          
+          # Create app structure
+          mkdir -p $APP_NAME.app/Contents/MacOS
+          mkdir -p $APP_NAME.app/Contents/Resources
+          
+          # Copy binary
+          cp dist/${{ matrix.os }}-${{ matrix.arch }}/$APP_NAME $APP_NAME.app/Contents/MacOS/
+          chmod +x $APP_NAME.app/Contents/MacOS/$APP_NAME
+          
+          # Create Info.plist
+          cat > $APP_NAME.app/Contents/Info.plist << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>$APP_NAME</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.example.$APP_NAME</string>
+              <key>CFBundleName</key>
+              <string>$APP_NAME</string>
+              <key>CFBundleVersion</key>
+              <string>1.0.0</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+          </dict>
+          </plist>
+          EOF
+          
+          # Create DMG using genisoimage (cross-platform alternative)
+          mkdir -p dmg-contents
+          cp -r $APP_NAME.app dmg-contents/
+          
+          # Create DMG
+          genisoimage -V "$APP_NAME" -D -R -apple -no-pad -o dist/${{ matrix.os }}-${{ matrix.arch }}.dmg dmg-contents/
+      
+      - name: Rename Windows executable
+        if: matrix.os == 'windows'
+        run: |
+          # Windows binary is already .exe, just move it to final location
+          cp dist/${{ matrix.os }}-${{ matrix.arch }}/your-app.exe dist/${{ matrix.os }}-${{ matrix.arch }}.exe
+      
+      - name: Upload Linux RPM
+        if: matrix.os == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}-${{ matrix.arch }}-rpm
+          path: dist/${{ matrix.os }}-${{ matrix.arch }}.rpm
+      
+      - name: Upload macOS DMG
+        if: matrix.os == 'darwin'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}-${{ matrix.arch }}-dmg
+          path: dist/${{ matrix.os }}-${{ matrix.arch }}.dmg
+      
+      - name: Upload Windows EXE
+        if: matrix.os == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}-${{ matrix.arch }}-exe
+          path: dist/${{ matrix.os }}-${{ matrix.arch }}.exe
