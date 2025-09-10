@@ -11,7 +11,7 @@ jobs:
     strategy:
       matrix:
         os: [darwin, windows, linux]
-        arch: [amd64]
+        arch: [amd64, arm64]
     name: Build for ${{ matrix.os }}/${{ matrix.arch }}
     steps:
       - name: Checkout source code
